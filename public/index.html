@@ -1,0 +1,178 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>Weather Station (MQTT WebSockets)</title>
+    <link rel="stylesheet" href="css/styles.css">
+    <script src="https://cdnjs.cloudflare.com/ajax/libs/mqtt/4.3.7/mqtt.min.js"></script>
+    <script src="https://cdn.jsdelivr.net/npm/chart.js"></script>
+    <script src="https://cdn.jsdelivr.net/npm/chartjs-plugin-zoom@1.2.1/dist/chartjs-plugin-zoom.min.js"></script> <!-- Zoom plugin -->
+</head>
+<body>
+    <h2>MQTT Weather Station</h2>
+    <div class="container">
+        <p>Temperature: <span id="temp" class="data">--</span> °C</p>
+        <p>Humidity: <span id="humidity" class="data">--</span> %</p>
+    </div>
+    <div class="chart-container">
+        <canvas id="weatherChart"></canvas>
+    </div>
+
+    <script>
+        // MQTT setup
+        const mqttClient = mqtt.connect('ws://157.173.101.159:9001');
+
+        mqttClient.on('connect', () => {
+            console.log("Connected to MQTT via WebSockets");
+            mqttClient.subscribe("/work_group_01/room_temp/temperature");
+            mqttClient.subscribe("/work_group_01/room_temp/humidity");
+        });
+
+        mqttClient.on('error', (err) => {
+            console.error('MQTT Error:', err);
+        });
+
+        mqttClient.on('message', (topic, message) => {
+            try {
+                const value = message.toString();
+                console.log(`Received: ${topic} → ${value}`);
+
+                if (topic === "/work_group_01/room_temp/temperature") {
+                    document.getElementById("temp").innerText = value;
+                } else if (topic === "/work_group_01/room_temp/humidity") {
+                    document.getElementById("humidity").innerText = value;
+                }
+            } catch (err) {
+                console.error('Error processing message:', err);
+            }
+        });
+
+        // Chart setup with improved design
+        const ctx = document.getElementById('weatherChart').getContext('2d');
+        const weatherChart = new Chart(ctx, {
+            type: 'line',
+            data: {
+                labels: [],
+                datasets: [
+                    {
+                        label: 'Avg Temperature (°C)',
+                        data: [],
+                        borderColor: function(context) {
+                            const chart = context.chart;
+                            const {ctx, chartArea} = chart;
+                            if (!chartArea) return;
+                            const gradient = ctx.createLinearGradient(0, chartArea.top, 0, chartArea.bottom);
+                            gradient.addColorStop(0, '#FF6384');
+                            gradient.addColorStop(1, '#FF9E40');
+                            return gradient;
+                        },
+                        backgroundColor: 'rgba(255, 99, 132, 0.2)',
+                        fill: false,
+                        tension: 0.4,
+                        pointRadius: 5,
+                        pointHoverRadius: 8,
+                        pointStyle: 'circle',
+                        pointBackgroundColor: '#FF6384'
+                    },
+                    {
+                        label: 'Avg Humidity (%)',
+                        data: [],
+                        borderColor: function(context) {
+                            const chart = context.chart;
+                            const {ctx, chartArea} = chart;
+                            if (!chartArea) return;
+                            const gradient = ctx.createLinearGradient(0, chartArea.top, 0, chartArea.bottom);
+                            gradient.addColorStop(0, '#36A2EB');
+                            gradient.addColorStop(1, '#4BC0C0');
+                            return gradient;
+                        },
+                        backgroundColor: 'rgba(54, 162, 235, 0.2)',
+                        fill: false,
+                        tension: 0.4,
+                        pointRadius: 5,
+                        pointHoverRadius: 8,
+                        pointStyle: 'circle',
+                        pointBackgroundColor: '#36A2EB'
+                    }
+                ]
+            },
+            options: {
+                responsive: true,
+                maintainAspectRatio: false,
+                scales: {
+                    x: {
+                        title: { display: true, text: 'Time (5-min intervals)', font: { size: 14 } },
+                        ticks: {
+                            maxRotation: 45,
+                            minRotation: 45,
+                            font: { size: 12 }
+                        },
+                        grid: { color: 'rgba(0, 0, 0, 0.05)' }
+                    },
+                    y: {
+                        title: { display: true, text: 'Value', font: { size: 14 } },
+                        beginAtZero: true,
+                        suggestedMax: 100,
+                        grid: { color: 'rgba(0, 0, 0, 0.05)' },
+                        ticks: { font: { size: 12 } }
+                    }
+                },
+                plugins: {
+                    legend: {
+                        display: true,
+                        labels: { font: { size: 14 }, padding: 20 }
+                    },
+                    tooltip: {
+                        enabled: true,
+                        mode: 'index',
+                        intersect: false,
+                        backgroundColor: 'rgba(0, 0, 0, 0.8)',
+                        titleFont: { size: 14 },
+                        bodyFont: { size: 12 },
+                        padding: 10
+                    },
+                    zoom: {
+                        zoom: {
+                            wheel: { enabled: true },
+                            pinch: { enabled: true },
+                            mode: 'x'
+                        },
+                        pan: {
+                            enabled: true,
+                            mode: 'x'
+                        }
+                    }
+                },
+                animation: {
+                    duration: 1500,
+                    easing: 'easeInOutQuad'
+                },
+                elements: {
+                    line: { borderWidth: 3 },
+                    point: { borderWidth: 2 }
+                }
+            }
+        });
+
+        // Fetch and update chart
+        async function updateChart() {
+            try {
+                const response = await fetch('/averages');
+                const data = await response.json();
+
+                weatherChart.data.labels = data.map(d => d.time);
+                weatherChart.data.datasets[0].data = data.map(d => d.temperature);
+                weatherChart.data.datasets[1].data = data.map(d => d.humidity);
+                weatherChart.update();
+            } catch (err) {
+                console.error('Error fetching averages:', err);
+            }
+        }
+
+        // Initial update and periodic refresh
+        updateChart();
+        setInterval(updateChart, 10000);
+    </script>
+</body>
+</html>
