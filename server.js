@@ -1,94 +1,83 @@
-const express = require('express');
-const sqlite3 = require('sqlite3').verbose();
 const mqtt = require('mqtt');
+const sqlite3 = require('sqlite3').verbose();
+const express = require('express');
+const path = require('path');
 const app = express();
-const port = 3000;
+const port = 5000;
 
-let latestTemperature = null;
-let latestHumidity = null;
+// Serve static files from the 'public' folder
+app.use(express.static(path.join(__dirname, 'public')));
 
-// Connect to SQLite database
-const db = new sqlite3.Database('./weather.db', (err) => {
-    if (err) {
-        console.error('Error opening database', err.message);
-    } else {
-        console.log('Connected to the SQLite database.');
-        db.run(`CREATE TABLE IF NOT EXISTS weather_data (
-            id INTEGER PRIMARY KEY AUTOINCREMENT,
-            temperature REAL,
-            humidity REAL,
-            timestamp DATETIME DEFAULT CURRENT_TIMESTAMP
-        )`);
-    }
+// MQTT setup
+const mqttClient = mqtt.connect('ws://157.173.101.159:9001');
+const topics = {
+  temperature: '/work_group_01/room_temp/temperature',
+  humidity: '/work_group_01/room_temp/humidity'
+};
+
+// SQLite setup
+const db = new sqlite3.Database('weather.db', (err) => {
+  if (err) console.error('Database error:', err);
+  else console.log('Connected to SQLite');
 });
 
-// Connect to MQTT Broker
-const mqttClient = mqtt.connect('ws://157.173.101.159:9001');
+db.run(`
+  CREATE TABLE IF NOT EXISTS weather (
+    id INTEGER PRIMARY KEY AUTOINCREMENT,
+    timestamp INTEGER,
+    temperature REAL,
+    humidity REAL
+  )
+`);
 
+// Store MQTT data
 mqttClient.on('connect', () => {
-    console.log("Connected to MQTT via WebSockets");
-    mqttClient.subscribe("/work_group_01/room_temp/temperature");
-    mqttClient.subscribe("/work_group_01/room_temp/humidity");
+  console.log('Connected to MQTT');
+  mqttClient.subscribe(Object.values(topics));
 });
 
 mqttClient.on('message', (topic, message) => {
-    const value = parseFloat(message.toString());
+  const value = parseFloat(message.toString());
+  const timestamp = Math.floor(Date.now() / 1000);
 
-    if (!isNaN(value)) {
-        if (topic === "/work_group_01/room_temp/temperature") {
-            latestTemperature = value;
-            console.log(`Temperature received: ${value}`);
-        } else if (topic === "/work_group_01/room_temp/humidity") {
-            latestHumidity = value;
-            console.log(`Humidity received: ${value}`);
-        }
+  if (topic === topics.temperature) {
+    db.run('INSERT INTO weather (timestamp, temperature) VALUES (?, ?)', [timestamp, value]);
+    console.log(`Stored temperature: ${value}°C`);
+  } else if (topic === topics.humidity) {
+    db.run('INSERT INTO weather (timestamp, humidity) VALUES (?, ?)', [timestamp, value]);
+    console.log(`Stored humidity: ${value}%`);
+  }
+});
+
+// API for 5-minute averages
+app.get('/averages', (req, res) => {
+  const fiveMinInSeconds = 5 * 60;
+  const now = Math.floor(Date.now() / 1000);
+  const startTime = now - (60 * 60); // Last hour
+
+  db.all(`
+    SELECT 
+      FLOOR(timestamp / ${fiveMinInSeconds}) * ${fiveMinInSeconds} AS time_bucket,
+      AVG(temperature) AS avg_temp,
+      AVG(humidity) AS avg_humidity
+    FROM weather
+    WHERE timestamp >= ${startTime}
+    GROUP BY FLOOR(timestamp / ${fiveMinInSeconds})
+    ORDER BY time_bucket ASC
+  `, (err, rows) => {
+    if (err) {
+      res.status(500).json({ error: err.message });
     } else {
-        console.warn(`Invalid data received on topic ${topic}: ${message.toString()}`);
+      res.json(rows.map(row => ({
+        time: new Date(row.time_bucket * 1000).toLocaleTimeString(),
+        temperature: row.avg_temp ? row.avg_temp.toFixed(2) : null,
+        humidity: row.avg_humidity ? row.avg_humidity.toFixed(2) : null
+      })));
     }
-
-    // Insert into the database when both temperature and humidity are available
-    if (latestTemperature !== null && latestHumidity !== null) {
-        db.run(`INSERT INTO weather_data (temperature, humidity) VALUES (?, ?)`,
-            [latestTemperature, latestHumidity],
-            function (err) {
-                if (err) {
-                    return console.error('Error inserting data', err.message);
-                }
-                console.log(`Data inserted: Temp = ${latestTemperature}, Humidity = ${latestHumidity}`);
-                latestTemperature = null;
-                latestHumidity = null;
-            }
-        );
-    }
+  });
 });
 
-// API endpoint to fetch averaged data
-app.get('/averaged-data', (req, res) => {
-    const query = `
-        SELECT 
-            strftime('%Y-%m-%d %H:%M', timestamp) as time,
-            AVG(temperature) as avg_temp,
-            AVG(humidity) as avg_humidity
-        FROM weather_data
-        GROUP BY strftime('%Y-%m-%d %H:%M', timestamp)
-        ORDER BY time DESC
-        LIMIT 12
-    `;
-
-    db.all(query, [], (err, rows) => {
-        if (err) {
-            res.status(500).json({ error: err.message });
-            return;
-        }
-
-        const labels = rows.map(row => row.time).reverse();
-        const temperature = rows.map(row => row.avg_temp).reverse();
-        const humidity = rows.map(row => row.avg_humidity).reverse();
-
-        res.json({ labels, temperature, humidity });
-    });
-});
-
+// Start the server
 app.listen(port, () => {
-    console.log(`Server running at http://localhost:${port}`);
+  console.log(`Server running at http://localhost:${port}`);
 });
